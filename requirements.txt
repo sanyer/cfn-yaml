@@ -1,0 +1,6 @@
+aiohttp
+cchardet
+aiodns
+uvloop
+beautifulsoup4
+requests

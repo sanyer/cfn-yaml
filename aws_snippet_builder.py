@@ -11,91 +11,89 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-   
+
 from bs4 import BeautifulSoup
 import requests
 import re
 import os
+import logging
 
+import aiohttp
+import asyncio
+
+import asyncio
+import uvloop
+from aiohttp import ClientSession
+
+asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+loop = asyncio.get_event_loop()
+
+async def async_request(url):
+    async with ClientSession() as session:
+        async with session.get(url) as response:
+            return await response.text()
+
+
+logger = logging.getLogger()
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s %(name)-12s %(levelname)-8s %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+logger.info('Getting AWS Resource Types Reference page')
 docurl = "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/"
-
-page = requests.get (docurl + "aws-template-resource-type-ref.html" )
-html_doc = page.content
-
-urllist = []
-
-# Create the folder for the snippets
-try:
-  os.mkdir("./cfn-yaml")
-except:
-  pass
-
-soup = BeautifulSoup(html_doc, 'html.parser')
-
-# Selector based lookup - gets what we want and awstoc duplicates
-urllisttmp = soup.select('li a[href*="aws-"]')
-
-# Build a list of link description, url
-for url in urllisttmp:
-  try:
-    myclass = url['class']
-  except:
-    # We actually only care about the ones without a class !!!
-    urllist.append([url.text, docurl + url['href']])
-
-snippetStart = """<snippet>
-  <content><![CDATA[
-"""
-snippetEnd = """
-]]></content>"""
+# requests
+# page = requests.get(docurl + "aws-template-resource-type-ref.html")
+# aiohttp
+page = loop.run_until_complete(async_request(docurl + "aws-template-resource-type-ref.html"))
 
 
-count = 0
-for (pagelink,pageurl) in urllist:
+logger.info('Parsing AWS Resource Types Reference page')
+soup = BeautifulSoup(page, 'html.parser')
+urllist = [(url.text, docurl + url['href']) for url in soup.select('div.highlights > ul li a[href*="aws-"]')]
 
-  hotkey = ""
-  snippet = ""
-  pagelinklist = pagelink.split("::")
-  hotkey = "cfn-" + pagelinklist[1]
-  for i in range(2,len(pagelinklist)):
-    hotkey =  hotkey + "-" + pagelinklist[i]
+async def fetch(url, session):
+    async with session.get(url) as response:
+        return await response.read()
+async def run(url_list):
+    # Fetch all responses within one Client session,
+    # keep connection alive for all requests.
+    async with ClientSession() as session:
+        tasks = [asyncio.ensure_future(fetch(url, session)) for url in url_list]
+        responses = await asyncio.gather(*tasks)
+        # you now have all response bodies in this variable
+        print(responses)
+loop = asyncio.get_event_loop()
+future = asyncio.ensure_future(run(urllist))
+loop.run_until_complete(future)
 
-  snippetFinish = """
-  <tabTrigger>""" + hotkey + """</tabTrigger>
-  <scope>source.yaml, source.cloudformation</scope>
-  </snippet>"""
+# tasks = [asyncio.ensure_future(async_request(url)) for url in urllist]
+# responses = await asyncio.gather(*tasks)
+# loop.run_until_complete(asyncio.wait(tasks))
+# print(responses)
+exit()
 
-  # print hotkey
+SNIPPETS = {}
+for (pagename, pageurl) in urllist:
+    logger.info('Parsing %s', pagename)
 
-  snippet = snippet +  snippetStart
-  snippet = snippet +  "#AWS-DOC " + pageurl + '\n'
+    # requests
+    page = requests.get(pageurl).content
+    aws_yaml = BeautifulSoup(page, 'html.parser').select_one('#YAML code').text.strip()
+    # aiohttp
+    tasks = [asyncio.ensure_future(async_request(url)) for url in urllist]
+    loop.run_until_complete(asyncio.wait(tasks))
 
-  page = requests.get(pageurl).content
-  soup2 = BeautifulSoup(page, 'html.parser')
-  fragment = soup2.select_one('#YAML pre')
+    snippet = dict(
+        prefix=pagename.replace('::', '-').lower(),
+        body="#AWS-DOC %s\n%s" % (pageurl, aws_yaml),
+        description=pagename,
+        scope='source.cloudformation'
+    )
+    SNIPPETS[snippet['prefix']] = snippet
 
-  for tag in fragment:
-    #Some source material has an extra \n that needs to be stripped
-    snippetfilter = tag.text
-    if snippetfilter[0] == '\n':
-      snippet = snippet + snippetfilter[1:]
-    else:
-      snippet = snippet + tag.text  
-
-  count += 1
-  snippet = snippet + snippetEnd
-  snippet = snippet +  snippetFinish
-
-  # if count == 10:
-  #   break
-
-  print "writing: " + "cfn-yaml/" + hotkey+".sublime-snippet"
-  # print snippet
-  try:
-    os.mkdir("cfn-yaml/" + pagelinklist[1])
-  except:
-    pass
-
-  f = open("cfn-yaml/" + pagelinklist[1] + "/" + hotkey+".sublime-snippet", "wb")
-  f.write(snippet)
-  f.close()
+snippets_file_name = 'snippets.json'
+logger.info('Writing file %s', snippets_file_name)
+with open(snippets_file_name, 'w') as snippets_file:
+    snippets_file.write(SNIPPETS)
